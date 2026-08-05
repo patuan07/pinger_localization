@@ -1,0 +1,16 @@
+# Default parameters for the pinger localization simulator.
+# These can be overridden via launch-file arguments.
+
+pinger_simulator:
+  ros__parameters:
+    pinger_north: 10.0
+    pinger_east: 5.0
+    noise_radius: 0.5
+    noise_type: "jitter"          # "jitter", "gaussian", or "both"
+    doa_noise_std: 3.0
+    trajectory_type: "circle"     # circle, lawnmower, figure8, spiral
+    trajectory_radius: 10.0
+    trajectory_speed: 1.0
+    depth: -2.0
+    ping_interval: 2.0
+    odom_rate: 20.0

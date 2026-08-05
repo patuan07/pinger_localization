@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>pinger_localization</name>
+  <version>0.1.0</version>
+  <description>Underwater acoustic pinger 2D localization: simulator, six solver algorithms, and evaluation tools.</description>
+
+  <maintainer email="tuanpham@todo.todo">tuanpham</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>bb_sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>launch</depend>
+  <depend>python3-numpy</depend>
+  <depend>python3-scipy</depend>
+  <depend>python3-matplotlib</depend>
+
+  <exec_depend>ros2launch</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
