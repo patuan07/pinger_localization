@@ -189,6 +189,7 @@ Plus a **convergence table** printed to stdout:
 | `/sensors/ping` | `bb_sensor_msgs/Ping` | Simulator | ~0.5 Hz | Body-relative DOA measurement |
 | `/pinger_localization/ground_truth` | `geometry_msgs/PointStamped` | Simulator | Per ping | True pinger position (solvers do NOT see this) |
 | `/pinger_localization/<name>/estimate` | `geometry_msgs/PointStamped` | Each solver | Per ping | Estimated pinger position in NED |
+| `/pinger_localization/<name>/estimate_pose` | `geometry_msgs/PoseStamped` | Each solver | Per ping | Estimated pinger pose in NED, rendered at `estimate_depth` (visualization) |
 | `/pinger_localization/eval/summary` | `std_msgs/String` | Eval node | Per GT | Text summary of all solver errors |
 
 ## Parameters
@@ -208,6 +209,7 @@ Plus a **convergence table** printed to stdout:
 | `depth` | float | `-2.0` | Constant vehicle depth (m, NED) |
 | `ping_interval` | float | `2.0` | Seconds between pings |
 | `odom_rate` | float | `20.0` | Odometry publish rate (Hz) |
+| `world_frame` | string | `"odom_ned"` | Frame name for odom, ground truth, and pinger positions |
 
 ### Per-solver parameters
 
@@ -226,10 +228,19 @@ Each solver has module-level constants at the top of its source file (tunable vi
 | `iterative_gd` | `learning_rate` | `0.05` | Initial learning rate |
 | `iterative_gd` | `gd_steps` | `20` | Gradient descent steps per ping |
 
+All solvers additionally share a common `estimate_depth` parameter (base class):
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `world_frame` | string | `"odom_ned"` | Frame name the pinger estimate is published in (e.g. `world`, `map`) |
+| `estimate_depth` | float | `1.0` | Depth (m, NED) of the visualization pose (`estimate_pose`) — renders underwater |
+| `odom_history_size` | int | `1000` | Number of odometry samples buffered per solver |
+
 ## Coordinate Convention
 
 - **World frame:** NED (North-East-Down)
   - X = North, Y = East, Z = Down (negative altitude)
+- **Frame name:** the odom, ground truth, and pinger estimates are all published in the frame named by the `world_frame` parameter (default `"odom_ned"`). Set it to your real-world frame (e.g. `world_frame:=world`) at launch — the estimates are computed in whatever frame the odometry pose is expressed in, so relabeling is only correct when that matches your world frame.
 - **DOA**: Body-relative degrees
   - 0° = directly ahead of the vehicle
   - +90° = starboard (right side)
@@ -296,7 +307,7 @@ pinger_localization/
 |---|---|
 | `rclpy` | ROS2 Python client library |
 | `nav_msgs` | `Odometry` message |
-| `geometry_msgs` | `PointStamped` message |
+| `geometry_msgs` | `PointStamped`, `PoseStamped` messages |
 | `bb_sensor_msgs` | `Ping` message (from `bb_msgs` metapackage) |
 | `std_msgs` | `String` message (eval summary) |
 | `numpy` | Numerical arrays, vectorized particle ops |

@@ -13,7 +13,7 @@ from collections import deque
 from typing import Optional, Tuple
 
 import numpy as np
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
@@ -148,6 +148,20 @@ class BaseSolver(Node):
             .get_parameter_value()
             .integer_value
         )
+        # Depth (m, NED) at which the visualization pose is rendered underwater.
+        self.estimate_depth = (
+            self.declare_parameter("estimate_depth", 1.0)
+            .get_parameter_value()
+            .double_value
+        )
+        # Frame in which the pinger estimate is expressed. Defaults to the
+        # simulator's odom/world frame; override to your real-world frame name
+        # (e.g. "world", "map") at launch time.
+        self._world_frame = (
+            self.declare_parameter("world_frame", "odom_ned")
+            .get_parameter_value()
+            .string_value
+        )
         # =================
 
         # Odom history: deque of (stamp_ns, north, east, yaw_rad).
@@ -168,6 +182,13 @@ class BaseSolver(Node):
         self._est_pub = self.create_publisher(
             PointStamped,
             f"/pinger_localization/{solver_name}/estimate",
+            10,
+        )
+
+        # Publisher for estimate pose (visualization).
+        self._est_pose_pub = self.create_publisher(
+            PoseStamped,
+            f"/pinger_localization/{solver_name}/estimate_pose",
             10,
         )
 
@@ -222,17 +243,27 @@ class BaseSolver(Node):
         return wrap_angle_rad(world_b - vehicle_yaw)
 
     def publish_estimate(self, north: float, east: float, stamp=None):
-        """Publish a PointStamped estimate."""
+        """Publish a PointStamped estimate and a PoseStamped for visualization."""
         msg = PointStamped()
         if stamp is not None:
             msg.header.stamp = stamp
         else:
             msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "pinger_ned"
+        msg.header.frame_id = self._world_frame
         msg.point.x = float(north)
         msg.point.y = float(east)
         msg.point.z = 0.0
         self._est_pub.publish(msg)
+
+        # Pose output (visualization): same world-frame position, but at a fixed
+        # depth below the surface so it renders underwater in RViz.
+        pose = PoseStamped()
+        pose.header = msg.header
+        pose.pose.position.x = float(north)
+        pose.pose.position.y = float(east)
+        pose.pose.position.z = self.estimate_depth
+        pose.pose.orientation.w = 1.0
+        self._est_pose_pub.publish(pose)
 
     # ------------------------------------------------------------------
     # Callbacks

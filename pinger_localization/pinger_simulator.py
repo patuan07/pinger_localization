@@ -109,6 +109,13 @@ class PingerSimulator(Node):
             .get_parameter_value()
             .double_value
         )
+        # Frame in which odom, ground truth, and pinger positions are expressed.
+        # Override to your real-world frame name (e.g. "world") at launch time.
+        self._world_frame = (
+            self.declare_parameter("world_frame", "odom_ned")
+            .get_parameter_value()
+            .string_value
+        )
 
         # Create trajectory generator.
         self._trajectory = create_trajectory(
@@ -166,7 +173,7 @@ class PingerSimulator(Node):
         # Build Odometry message in NED frame.
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "odom_ned"
+        msg.header.frame_id = self._world_frame
         msg.child_frame_id = "base_link"
 
         # Position: x=North, y=East, z=Down.
@@ -236,7 +243,7 @@ class PingerSimulator(Node):
         # Publish ground truth.
         gt = PointStamped()
         gt.header.stamp = self.get_clock().now().to_msg()
-        gt.header.frame_id = "pinger_ned"
+        gt.header.frame_id = self._world_frame
         gt.point.x = self.pinger_north
         gt.point.y = self.pinger_east
         gt.point.z = 0.0

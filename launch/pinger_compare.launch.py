@@ -40,6 +40,7 @@ def _parse_solvers(context):
 def _create_nodes(context, *args, **kwargs):
     """OpaqueFunction: produce solver + eval nodes from the parsed solver list."""
     solver_names = _parse_solvers(context)
+    world_frame = LaunchConfiguration("world_frame").perform(context)
 
     nodes = []
     for name in solver_names:
@@ -53,7 +54,7 @@ def _create_nodes(context, *args, **kwargs):
             executable=executable,
             name=node_name,
             output="screen",
-            parameters=[],
+            parameters=[{"world_frame": world_frame}],
         ))
 
     # Eval node — pass the parsed list directly.
@@ -85,6 +86,7 @@ def generate_launch_description():
     doa_noise_std_arg = DeclareLaunchArgument("doa_noise_std", default_value="3.0")
     ping_interval_arg = DeclareLaunchArgument("ping_interval", default_value="2.0")
     odom_rate_arg = DeclareLaunchArgument("odom_rate", default_value="20.0")
+    world_frame_arg = DeclareLaunchArgument("world_frame", default_value="odom_ned")
 
     solvers_arg = DeclareLaunchArgument(
         "solvers",
@@ -123,6 +125,9 @@ def generate_launch_description():
         "odom_rate": ParameterValue(
             LaunchConfiguration("odom_rate"), value_type=float
         ),
+        "world_frame": ParameterValue(
+            LaunchConfiguration("world_frame"), value_type=str
+        ),
     }
 
     # ---- Simulator ----
@@ -149,6 +154,7 @@ def generate_launch_description():
         doa_noise_std_arg,
         ping_interval_arg,
         odom_rate_arg,
+        world_frame_arg,
         solvers_arg,
         simulator_node,
         dynamic_nodes,

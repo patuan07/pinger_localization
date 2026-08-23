@@ -37,6 +37,7 @@ def generate_launch_description():
     doa_noise_std_arg = DeclareLaunchArgument("doa_noise_std", default_value="3.0")
     ping_interval_arg = DeclareLaunchArgument("ping_interval", default_value="2.0")
     odom_rate_arg = DeclareLaunchArgument("odom_rate", default_value="20.0")
+    world_frame_arg = DeclareLaunchArgument("world_frame", default_value="odom_ned")
 
     simulator_params = {
         "trajectory_type": ParameterValue(
@@ -69,6 +70,9 @@ def generate_launch_description():
         "odom_rate": ParameterValue(
             LaunchConfiguration("odom_rate"), value_type=float
         ),
+        "world_frame": ParameterValue(
+            LaunchConfiguration("world_frame"), value_type=str
+        ),
     }
 
     # ---- Simulator ----
@@ -97,7 +101,11 @@ def generate_launch_description():
             executable=f"{name}.py",
             name=f"pinger_{name}",
             output="screen",
-            parameters=[],
+            parameters=[{
+                "world_frame": ParameterValue(
+                    LaunchConfiguration("world_frame"), value_type=str
+                ),
+            }],
         ))
 
     # ---- Eval node ----
@@ -123,6 +131,7 @@ def generate_launch_description():
         doa_noise_std_arg,
         ping_interval_arg,
         odom_rate_arg,
+        world_frame_arg,
         simulator_node,
         *solver_nodes,
         eval_node,

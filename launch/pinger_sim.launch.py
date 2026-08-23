@@ -40,6 +40,7 @@ def generate_launch_description():
     # Timing.
     ping_interval_arg = DeclareLaunchArgument("ping_interval", default_value="2.0")
     odom_rate_arg = DeclareLaunchArgument("odom_rate", default_value="20.0")
+    world_frame_arg = DeclareLaunchArgument("world_frame", default_value="odom_ned")
 
     simulator_node = Node(
         package="pinger_localization",
@@ -77,6 +78,9 @@ def generate_launch_description():
             "odom_rate": ParameterValue(
                 LaunchConfiguration("odom_rate"), value_type=float
             ),
+            "world_frame": ParameterValue(
+                LaunchConfiguration("world_frame"), value_type=str
+            ),
         }],
     )
 
@@ -91,5 +95,6 @@ def generate_launch_description():
         doa_noise_std_arg,
         ping_interval_arg,
         odom_rate_arg,
+        world_frame_arg,
         simulator_node,
     ])
