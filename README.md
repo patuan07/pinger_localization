@@ -152,6 +152,29 @@ ros2 launch pinger_localization pinger_compare.launch.py \
     solvers:="batch_sliding,batch_full,particle_filter,iterative_ekf,iterative_rls,iterative_gd"
 ```
 
+### 4. Real-world operation (no simulator)
+
+Run the solvers against your **real** sensors instead of the simulator:
+
+```bash
+ros2 launch pinger_localization pinger_irl.launch.py \
+    solvers:="iterative_ekf,iterative_rls,iterative_gd" \
+    odom_topic:=/auv5/odom_ned \
+    ping_topic:=/sensors/ping \
+    world_frame:=world
+```
+
+This launches only the solver nodes (no simulator, no eval node — there is no ground truth in real life). Topic remapping points the solvers at your real data sources instead of the simulator's `/auv5/odom_ned` and `/sensors/ping`.
+
+The solvers need exactly two live inputs:
+
+| Input | Type | Convention required |
+|---|---|---|
+| `odom_topic` | `nav_msgs/Odometry` | Pose in NED: `x`=North, `y`=East, `z`=Down; quaternion yaw measured from North toward East (same convention `base.py`'s `yaw_from_odom` expects). If your vehicle publishes ENU odom, convert to NED first. |
+| `ping_topic` | `bb_sensor_msgs/Ping` | `doa_deg` is **body-relative**: 0° = straight ahead, +90° = starboard. The solver computes `world_bearing = vehicle_yaw + doa`. |
+
+Estimates are published on `/pinger_localization/<name>/estimate` (`PointStamped`) and `/pinger_localization/<name>/estimate_pose` (`PoseStamped`), both in the `world_frame` frame. Record them with `ros2 bag record /pinger_localization/.../estimate_pose`.
+
 ## Offline Analysis
 
 After a run produces a CSV log, analyze it with the plotting script:
@@ -278,7 +301,8 @@ pinger_localization/
 ├── launch/
 │   ├── pinger_sim.launch.py       # Simulator only
 │   ├── pinger_all.launch.py       # Simulator + all solvers + eval
-│   └── pinger_compare.launch.py   # Configurable solver subset
+│   ├── pinger_compare.launch.py   # Configurable solver subset
+│   └── pinger_irl.launch.py       # Real sensors only (no simulator)
 └── pinger_localization/
     ├── __init__.py
     ├── pinger_simulator.py         # Simulator node
