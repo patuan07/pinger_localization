@@ -1,0 +1,56 @@
+# Default parameters for the live seed-traced sonar pipe model node
+# (pinger_sonar_trace).  Edit here, or override via launch arguments, e.g.:
+#
+#   ros2 launch pinger_localization sonar_trace.launch.py \
+#       estimate_topic:=/pinger_localization/iterative_ekf/estimate \
+#       n_segments:=4
+#
+# Note: the parameter file's node name must match the node's --name override
+# in sonar_trace.launch.py.
+
+pinger_sonar_trace:
+  ros__parameters:
+
+    # ---- topics -------------------------------------------------------------
+    # Which solver's estimate seeds the trace.  Every solver publishes its own
+    # PointStamped estimate; set estimate_topic to choose the seed source:
+    #   /pinger_localization/batch_sliding/estimate
+    #   /pinger_localization/batch_full/estimate
+    #   /pinger_localization/particle_filter/estimate
+    #   /pinger_localization/iterative_ekf/estimate      (default)
+    #   /pinger_localization/iterative_rls/estimate
+    #   /pinger_localization/iterative_gd/estimate
+    estimate_topic: "/pinger_localization/iterative_ekf/estimate"
+
+    pointcloud_topic: "/oculus/pointcloud"
+    odom_topic: "/auv5/odom_ned"        # real bag: /auv5/nav/odom_ned
+
+    # ---- segmentation (what the published poses ARE) ------------------------
+    # The dense trace is split into `n_segments` straight segments by the exact
+    # DP fit; the PoseArray carries one pose per model VERTEX, so the pose
+    # count is n_segments + 1.  Default 3 => 4 poses (the user's "4 poses").
+    # More segments fit a bendier pipe more tightly (offline sweep: 3_rob 33/40
+    # -> 5_rob 38/40 correct), at the cost of more poses.
+    n_segments: 3
+
+    # Robust-fit knob: per segment, drop the worst-fitting fraction of trace
+    # samples so short bright-noise excursions do not steer the breakpoints.
+    # 0.0 = plain least-squares fit over every trace sample.
+    seg_robust_trim: 0.15
+
+    # ---- sonar mount (base_link -> auv5/sonar, from the sep3_2dsonar_low bag)
+    sonar_mount_forward_m: 0.29442
+    sonar_mount_lateral_m: 0.0
+
+    # ---- frames (informational) --------------------------------------------
+    sonar_frame: "auv5/sonar"
+    body_frame: "auv5/base_link_ned"
+
+    # ---- guards / perf ------------------------------------------------------
+    min_cloud_points: 100       # below this the cloud is ignored
+    max_odom_age_s: 0.5         # skip a cloud if odom is older than this (0=off)
+    max_estimate_age_s: 5.0     # skip if the pinger estimate is stale (0=off)
+    check_estimate_frame: true  # warn (not fail) if estimate/odom frames differ
+    publish_failures: false     # publish an empty PoseArray when no model found
+    cloud_stride: 1             # subsample every Nth cloud row (perf backstop)
+    odom_history_size: 1000

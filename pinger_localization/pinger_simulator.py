@@ -31,6 +31,7 @@ def _quaternion_from_euler(roll, pitch, yaw):
     return [qx, qy, qz, qw]
 
 from pinger_localization.sim.trajectory import create_trajectory
+from pinger_localization.solvers.base import wrap_angle_0_360
 
 # === Parameters ===
 PINGER_NORTH = 10.0           # True pinger North (m, NED)
@@ -219,18 +220,20 @@ class PingerSimulator(Node):
             pinger_east - veh_east, pinger_north - veh_north
         )
 
-        # Convert to body-relative DOA: body = world - yaw.
-        doa_body_rad = world_bearing_rad - veh_yaw
-        # Wrap to [-pi, pi).
-        doa_body_rad = (doa_body_rad + math.pi) % (2.0 * math.pi) - math.pi
-        doa_body_deg = math.degrees(doa_body_rad)
+        # Convert to body-relative DOA in the sensor's 0..360 format:
+        # 0 = forward, 90 = starboard (right), 180 = behind, 270 = port (left),
+        # increasing clockwise from the vehicle (body = world - yaw).
+        doa_body_deg = math.degrees(world_bearing_rad - veh_yaw)
+        doa_body_deg = wrap_angle_0_360(doa_body_deg)
 
-        # Apply Gaussian noise to DOA if configured.
+        # Apply Gaussian noise to DOA if configured, then keep within [0, 360).
         if self.noise_type in ("gaussian", "both"):
-            doa_body_deg += random.gauss(0.0, self.doa_noise_std)
+            doa_body_deg = wrap_angle_0_360(
+                doa_body_deg + random.gauss(0.0, self.doa_noise_std)
+            )
 
-        # Round to integer as per the Ping message type.
-        doa_deg = int(round(doa_body_deg))
+        # Round to integer as per the Ping message type (360 wraps back to 0).
+        doa_deg = int(round(doa_body_deg)) % 360
 
         # Publish ping.
         ping = Ping()

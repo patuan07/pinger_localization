@@ -62,7 +62,7 @@ src/
 
 The `Ping` message has these fields:
 ```python
-int32 doa_deg      # Body-relative direction of arrival (degrees)
+int32 doa_deg      # Body-relative DOA (deg), 0..360 clockwise: 0 fwd, 90 right
 int32 elevation    # Elevation angle (degrees)
 int32 frequency    # Acoustic frequency (Hz)
 float32 confidence # Detection confidence [0, 1]
@@ -171,7 +171,7 @@ The solvers need exactly two live inputs:
 | Input | Type | Convention required |
 |---|---|---|
 | `odom_topic` | `nav_msgs/Odometry` | Pose in NED: `x`=North, `y`=East, `z`=Down; quaternion yaw measured from North toward East (same convention `base.py`'s `yaw_from_odom` expects). If your vehicle publishes ENU odom, convert to NED first. |
-| `ping_topic` | `bb_sensor_msgs/Ping` | `doa_deg` is **body-relative**: 0° = straight ahead, +90° = starboard. The solver computes `world_bearing = vehicle_yaw + doa`. |
+| `ping_topic` | `bb_sensor_msgs/Ping` | `doa_deg` is **body-relative** on `[0, 360)`, clockwise from the bow: 0° = forward, 90° = starboard, 180° = behind, 270° = port. The solver computes `world_bearing = vehicle_yaw + doa`. |
 
 Estimates are published on `/pinger_localization/<name>/estimate` (`PointStamped`) and `/pinger_localization/<name>/estimate_pose` (`PoseStamped`), both in the `world_frame` frame. Record them with `ros2 bag record /pinger_localization/.../estimate_pose`.
 
@@ -264,11 +264,12 @@ All solvers additionally share a common `estimate_depth` parameter (base class):
 - **World frame:** NED (North-East-Down)
   - X = North, Y = East, Z = Down (negative altitude)
 - **Frame name:** the odom, ground truth, and pinger estimates are all published in the frame named by the `world_frame` parameter (default `"odom_ned"`). Set it to your real-world frame (e.g. `world_frame:=world`) at launch — the estimates are computed in whatever frame the odometry pose is expressed in, so relabeling is only correct when that matches your world frame.
-- **DOA**: Body-relative degrees
-  - 0° = directly ahead of the vehicle
-  - +90° = starboard (right side)
-  - ±180° = directly behind
-- **Transformation:** `world_bearing = vehicle_yaw + doa_body`
+- **DOA**: Body-relative degrees, reported on `[0, 360)` and increasing clockwise from the vehicle (viewed from above)
+  - 0° = directly ahead of the vehicle (bow)
+  - 90° = starboard (right side)
+  - 180° = directly behind
+  - 270° = port (left side)
+- **Transformation:** `world_bearing = vehicle_yaw + doa_body` (wrap handled internally)
 
 ## Noise Models
 

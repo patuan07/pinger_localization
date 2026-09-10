@@ -54,6 +54,11 @@ def wrap_angle_rad(angle_rad: float) -> float:
     return ((angle_rad + math.pi) % (2.0 * math.pi)) - math.pi
 
 
+def wrap_angle_0_360(angle_deg: float) -> float:
+    """Wrap an angle in degrees to [0, 360)."""
+    return angle_deg % 360.0
+
+
 def angular_error_deg(measured: float, expected: float) -> float:
     """Shortest signed angular difference in degrees: measured - expected, wrapped to [-180, 180)."""
     return wrap_angle_deg(measured - expected)
@@ -228,9 +233,15 @@ class BaseSolver(Node):
     def world_bearing_from_doa(doa_body_deg: float, vehicle_yaw_rad: float) -> float:
         """Convert body-relative DOA (degrees) to world-frame bearing (radians).
 
-        world_bearing = vehicle_yaw + doa_body (in rad).
+        Incoming convention: 0..360 degrees, 0 = forward, increasing clockwise
+        (90 = starboard/right, 180 = behind, 270 = port/left).
+
+        world_bearing = wrap(vehicle_yaw + doa_body).
         """
-        doa_rad = math.radians(doa_body_deg)
+        # Normalize the reading into [-180, 180) so any circular input
+        # (including 0..360 or noise spill) is handled uniformly.
+        doa_deg = wrap_angle_deg(doa_body_deg)
+        doa_rad = math.radians(doa_deg)
         return wrap_angle_rad(vehicle_yaw_rad + doa_rad)
 
     @staticmethod

@@ -43,6 +43,7 @@ setup(
             "iterative_ekf.py = pinger_localization.solvers.iterative_ekf:main",
             "iterative_rls.py = pinger_localization.solvers.iterative_rls:main",
             "iterative_gd.py = pinger_localization.solvers.iterative_gd:main",
+            "sonar_trace_node.py = pinger_localization.sonar_trace_node:main",
         ],
     },
 )
