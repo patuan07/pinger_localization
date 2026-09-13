@@ -1,13 +1,14 @@
 """
 Launch the live seed-traced sonar pipe model node (`pinger_sonar_trace`).
 
-The node subscribes to the sonar point cloud, seeds the pipe detector with the
-current pinger-localization estimate, and publishes the segmented pipe model's
-vertices as a PoseArray in the sonar frame (default n_segments=3 -> 4 poses).
+The node subscribes to the sonar point cloud, seeds the pipe detector from a
+solver estimate (default) or from a point clicked in the Foxglove 3D panel, and
+publishes the segmented pipe model's vertices as a PoseArray in the sonar frame
+(default n_segments=3 -> 4 poses).
 
 Defaults come from config/sonar_trace.yaml (edit that file to change the seed
-solver, segment count, mount offsets, ...); common overrides are exposed as
-launch arguments here.
+source/solver, segment count, mount offsets, ...); common overrides are exposed
+as launch arguments here.
 
 Usage:
     ros2 launch pinger_localization sonar_trace.launch.py
@@ -21,8 +22,13 @@ Usage:
         estimate_topic:=/pinger_localization/particle_filter/estimate \
         n_segments:=5
 
-Output: /pinger_localization/sonar_trace/vertices (geometry_msgs/PoseArray,
-frame auv5/sonar).
+    # seed manually by clicking the pipe in the Foxglove 3D panel (no solver,
+    # no odometry -- the click is already in the sonar frame):
+    ros2 launch pinger_localization sonar_trace.launch.py seed_source:=sonar_point
+
+Outputs: /pinger_localization/sonar_trace/seed_used (geometry_msgs/PointStamped,
+the seed actually used) and /pinger_localization/sonar_trace/vertices
+(geometry_msgs/PoseArray), both in frame auv5/sonar.
 """
 
 import os
@@ -41,6 +47,16 @@ CONFIG_FILE = os.path.join(
 
 def generate_launch_description():
     # Launch arguments (override the yaml defaults without editing the file).
+    seed_source_arg = DeclareLaunchArgument(
+        "seed_source", default_value="estimate",
+        description="'estimate' (solver estimate + odom) or 'sonar_point' "
+                    "(PointStamped clicked in the Foxglove 3D panel, already "
+                    "in the sonar frame).",
+    )
+    sonar_seed_arg = DeclareLaunchArgument(
+        "sonar_seed_topic", default_value="/pinger_localization/sonar_trace/seed",
+        description="PointStamped seed topic, used when seed_source=sonar_point.",
+    )
     estimate_arg = DeclareLaunchArgument(
         "estimate_topic",
         default_value="/pinger_localization/iterative_ekf/estimate",
@@ -80,6 +96,10 @@ def generate_launch_description():
         parameters=[
             CONFIG_FILE,   # base defaults from config/sonar_trace.yaml
             {
+                "seed_source": ParameterValue(
+                    LaunchConfiguration("seed_source"), value_type=str),
+                "sonar_seed_topic": ParameterValue(
+                    LaunchConfiguration("sonar_seed_topic"), value_type=str),
                 "estimate_topic": ParameterValue(
                     LaunchConfiguration("estimate_topic"), value_type=str),
                 "odom_topic": ParameterValue(
@@ -100,6 +120,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        seed_source_arg, sonar_seed_arg,
         estimate_arg, odom_arg, pointcloud_arg,
         n_segments_arg, seg_robust_arg, max_est_age_arg, mount_fwd_arg,
         node,

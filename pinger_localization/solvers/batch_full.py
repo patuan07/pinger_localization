@@ -70,6 +70,7 @@ class BatchFullSolver(BaseSolver):
         self._estimate_north = 0.0
         self._estimate_east = 0.0
         self._initialized = False
+        self._solved_once = False   # _initialized only seeds the starting guess
 
         self._ping_sub = self.create_subscription(
             Ping, "/sensors/ping", self._ping_callback, 10
@@ -77,7 +78,11 @@ class BatchFullSolver(BaseSolver):
 
         self.get_logger().info(
             f"BatchFull ready: use_ransac={self.use_ransac}, "
-            f"ransac_iters={self.ransac_iterations}"
+            f"ransac_iters={self.ransac_iterations}, "
+            f"ransac_inlier_thresh={self.ransac_inlier_thresh}deg, "
+            f"solve_every_n_pings={self.solve_every_n} (0 = never re-solve), "
+            f"init_range={self.init_range}m, "
+            f"ping<-'{self._ping_sub.topic_name}'"
         )
 
     # ------------------------------------------------------------------
@@ -163,6 +168,14 @@ class BatchFullSolver(BaseSolver):
             pn, pe = self._least_squares_solve(inlier_measurements, (best_north, best_east))
             return pn, pe, len(inlier_measurements)
 
+        # No consensus: the returned point is one sample pair's intersection, or
+        # the (0, 0) of a run that never agreed on anything.
+        self._throttled(
+            "warn", "full_ransac_no_consensus",
+            f"RANSAC found only {len(inlier_measurements)} inlier(s) among "
+            f"{len(self._measurements)} measurements (threshold "
+            f"{self.ransac_inlier_thresh}deg) -- ({best_north:.2f}, "
+            f"{best_east:.2f}) is unsupported by the data")
         return best_north, best_east, best_inliers
 
     # ------------------------------------------------------------------
@@ -188,6 +201,13 @@ class BatchFullSolver(BaseSolver):
         )
         if result.success:
             return float(result.x[0]), float(result.x[1])
+        # The old code returned x0 here without a word -- a non-converging
+        # solve looked identical to a good one.
+        self._throttled(
+            "warn", "full_ls_not_converged",
+            f"least-squares did not converge ({result.message}) on "
+            f"{len(measurements)} measurements -- keeping the initial guess "
+            f"({x0[0]:.2f}, {x0[1]:.2f})")
         return x0[0], x0[1]
 
     # ------------------------------------------------------------------
@@ -196,9 +216,10 @@ class BatchFullSolver(BaseSolver):
 
     def _ping_callback(self, msg: Ping):
         """Accumulate measurement and solve."""
-        vn, ve, vyaw, stamp_ns = self.get_latest_vehicle_state()
-        if stamp_ns == 0:
+        state = self.vehicle_state_for_ping(msg)
+        if state is None:
             return
+        vn, ve, vyaw, stamp_ns = state
 
         world_bearing_rad = self.world_bearing_from_doa(msg.doa_deg, vyaw)
         self._measurements.append((vn, ve, vyaw, world_bearing_rad, stamp_ns))
@@ -216,11 +237,27 @@ class BatchFullSolver(BaseSolver):
         if self.solve_every_n > 0 and self._ping_count % self.solve_every_n == 0:
             should_solve = True
         if len(self._measurements) < 2:
+            self._throttled(
+                "info", "full_needs_pings",
+                f"not solving: {len(self._measurements)}/2 measurements "
+                f"accumulated -- waiting for pings")
             return
 
         if not should_solve:
             # Still publish best guess so far (useful for live monitoring).
             if self._initialized:
+                if not self._solved_once:
+                    # _initialized only means the starting guess was seeded, so
+                    # what is being published until the first solve is a
+                    # placeholder, not an estimate of anything.
+                    self._throttled(
+                        "info", "full_unsolved",
+                        f"holding at ping {self._ping_count}: no solve has run "
+                        f"yet (solve_every_n_pings={self.solve_every_n}; 0 would "
+                        f"disable re-solving entirely), so the published estimate "
+                        f"is still the placeholder "
+                        f"({self._estimate_north:.2f}, {self._estimate_east:.2f}) "
+                        f"-- drive on")
                 self.publish_estimate(self._estimate_north, self._estimate_east)
             return
 
@@ -239,12 +276,18 @@ class BatchFullSolver(BaseSolver):
             # Simple measurements list for LS: (vn, ve, wb) tuple.
             ls_m = [(vn, ve, wb) for vn, ve, _, wb, _ in self._measurements]
             pn, pe = self._least_squares_solve(ls_m, x0)
+            # RANSAC is silently unavailable for the first few pings -- say so,
+            # or the switch from RANSAC to LS looks arbitrary.
+            why = ("use_ransac=False" if not self.use_ransac
+                   else f"only {len(self._measurements)}/5 measurements")
             self.get_logger().info(
-                f"LS: n={len(self._measurements)}, pos=({pn:.2f}, {pe:.2f})"
+                f"LS: n={len(self._measurements)}, pos=({pn:.2f}, {pe:.2f}) "
+                f"[{why}]"
             )
 
         self._estimate_north = pn
         self._estimate_east = pe
+        self._solved_once = True
         self.publish_estimate(pn, pe)
 
 

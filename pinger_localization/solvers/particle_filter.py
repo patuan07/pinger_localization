@@ -76,7 +76,11 @@ class ParticleFilterSolver(BaseSolver):
         )
 
         self.get_logger().info(
-            f"ParticleFilter ready: N={self.num_particles}, sigma={SIGMA_DOA_DEG}deg"
+            f"ParticleFilter ready: N={self.num_particles}, "
+            f"sigma={math.degrees(self.sigma_doa_rad):.1f}deg, "
+            f"init_range={self.init_range}m, resample_threshold="
+            f"{self.resample_threshold}, roughening_std={self.roughening_std}m, "
+            f"ping<-'{self._ping_sub.topic_name}'"
         )
 
     # ------------------------------------------------------------------
@@ -114,7 +118,14 @@ class ParticleFilterSolver(BaseSolver):
         if wsum > 0:
             self._weights /= wsum
         else:
-            # Degenerate: reset to uniform.
+            # Degenerate: reset to uniform.  Every particle disagrees so
+            # strongly with this bearing that the likelihoods underflowed --
+            # the estimate is then just the (uninformative) prior again.
+            self._throttled(
+                "warn", "pf_weights_underflow",
+                f"all {self.num_particles} particle weights underflowed to zero "
+                f"(doa={doa_body_deg:.1f}deg contradicts every particle) -- "
+                f"resetting to uniform")
             self._weights = np.ones(self.num_particles) / self.num_particles
 
     def _systematic_resample(self):
@@ -143,9 +154,10 @@ class ParticleFilterSolver(BaseSolver):
 
     def _ping_callback(self, msg: Ping):
         """Process a new ping: update weights, resample if needed, publish estimate."""
-        vn, ve, vyaw, stamp_ns = self.get_latest_vehicle_state()
-        if stamp_ns == 0:
+        state = self.vehicle_state_for_ping(msg)
+        if state is None:
             return
+        vn, ve, vyaw, stamp_ns = state
 
         # Initialize on first ping.
         if not self._initialized:
@@ -162,6 +174,12 @@ class ParticleFilterSolver(BaseSolver):
 
         # Resample if needed.
         if N_eff / self.num_particles < self.resample_threshold:
+            self._throttled(
+                "info", "pf_resampled",
+                f"resampling: N_eff={N_eff:.0f}/{self.num_particles} "
+                f"(< {self.resample_threshold:.2f} * N) -- the cloud has "
+                f"collapsed onto few particles, which is expected while the "
+                f"filter converges but not on every ping", every_s=5.0)
             indices = self._systematic_resample()
             self._particles = self._particles[indices]
             self._weights = np.ones(self.num_particles) / self.num_particles
@@ -175,7 +193,8 @@ class ParticleFilterSolver(BaseSolver):
 
         self.get_logger().info(
             f"N_eff={N_eff:.0f}/{self.num_particles}, "
-            f"est=({self._estimate_north:.2f}, {self._estimate_east:.2f})"
+            f"est=({self._estimate_north:.2f}, {self._estimate_east:.2f}), "
+            f"doa={msg.doa_deg:.1f}deg, pings={self._pings_seen}"
         )
 
 

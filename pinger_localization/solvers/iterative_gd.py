@@ -91,7 +91,10 @@ class IterativeGDSolver(BaseSolver):
 
         self.get_logger().info(
             f"GD ready: lr={self.learning_rate}, decay={self.lr_decay}, "
-            f"steps={self.gd_steps}, max_step={self.max_step_m}m"
+            f"steps={self.gd_steps}, max_step={self.max_step_m}m, "
+            f"window_size={self.window_size} (0 = keep every measurement), "
+            f"min_separation={self.min_separation}m, "
+            f"ping<-'{self._ping_sub.topic_name}'"
         )
 
     # ------------------------------------------------------------------
@@ -171,11 +174,22 @@ class IterativeGDSolver(BaseSolver):
         self._init_meas.append((vn, ve, world_b))
 
         if len(self._init_meas) < 2:
+            self._throttled(
+                "info", "gd_init_needs_pings",
+                f"GD not initialized: {len(self._init_meas)}/2 initial pings "
+                f"buffered -- waiting for another ping")
             return False
 
         vn0, ve0, _ = self._init_meas[0]
         vn1, ve1, _ = self._init_meas[-1]
-        if math.hypot(vn1 - vn0, ve1 - ve0) < self.min_separation:
+        moved = math.hypot(vn1 - vn0, ve1 - ve0)
+        if moved < self.min_separation:
+            self._throttled(
+                "info", "gd_init_needs_motion",
+                f"GD not initialized: vehicle has moved only {moved:.2f} m since "
+                f"the first buffered ping ({len(self._init_meas)} pings buffered, "
+                f"needs {self.min_separation:.2f} m to separate the bearings) -- "
+                f"drive on")
             return False
 
         # Simple triangulation.
@@ -183,6 +197,11 @@ class IterativeGDSolver(BaseSolver):
         result = triangulate_from_bearings(self._init_meas)
         if result is None:
             # Fallback: guess in front of vehicle.
+            self._throttled(
+                "warn", "gd_init_triangulation_failed",
+                f"triangulation from {len(self._init_meas)} bearings returned "
+                f"nothing (degenerate geometry) -- starting from a guess "
+                f"{self.init_range:.1f} m ahead of the vehicle instead")
             self._estimate_north = vn + self.init_range * math.cos(vyaw)
             self._estimate_east = ve + self.init_range * math.sin(vyaw)
         else:
@@ -202,9 +221,10 @@ class IterativeGDSolver(BaseSolver):
 
     def _ping_callback(self, msg: Ping):
         """Process a new ping."""
-        vn, ve, vyaw, stamp_ns = self.get_latest_vehicle_state()
-        if stamp_ns == 0:
+        state = self.vehicle_state_for_ping(msg)
+        if state is None:
             return
+        vn, ve, vyaw, stamp_ns = state
 
         # Delayed initialization.
         if not self._initialized:
@@ -231,6 +251,17 @@ class IterativeGDSolver(BaseSolver):
 
         # Decay learning rate.
         self._lr *= self.lr_decay
+        if self._lr < 0.01 * self.learning_rate:
+            # Steps have become so small that the estimate no longer tracks
+            # anything -- it keeps publishing, so this is invisible otherwise.
+            self._throttled(
+                "warn", "gd_lr_exhausted",
+                f"learning rate has decayed to {self._lr:.2e} "
+                f"({self._lr / self.learning_rate:.1e} of the initial "
+                f"{self.learning_rate}) after {self._pings_seen} pings -- each "
+                f"step now moves the estimate by a negligible amount, so it has "
+                f"stopped tracking.  Raise lr_decay toward 1.0 to keep it "
+                f"learning.", every_s=30.0)
 
         self.publish_estimate(self._estimate_north, self._estimate_east)
 
@@ -246,7 +277,8 @@ class IterativeGDSolver(BaseSolver):
 
         self.get_logger().info(
             f"GD est=({self._estimate_north:.2f}, {self._estimate_east:.2f}), "
-            f"lr={self._lr:.4f}, RMS_err={rms:.2f}deg"
+            f"lr={self._lr:.4f}, RMS_err={rms:.2f}deg, "
+            f"measurements={len(self._measurements)}, pings={self._pings_seen}"
         )
 
 

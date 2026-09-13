@@ -79,7 +79,9 @@ class IterativeEKFSolver(BaseSolver):
 
         self.get_logger().info(
             f"EKF ready: process_noise={self.process_noise}, "
-            f"meas_noise={math.degrees(self.measurement_noise_rad):.1f}deg"
+            f"meas_noise={math.degrees(self.measurement_noise_rad):.1f}deg, "
+            f"init_range={self.init_range}m, min_separation={self.min_separation}m, "
+            f"ping<-'{self._ping_sub.topic_name}'"
         )
 
     # ------------------------------------------------------------------
@@ -89,16 +91,32 @@ class IterativeEKFSolver(BaseSolver):
     def _try_initialize(self):
         """Attempt triangulation from buffered initial measurements."""
         if len(self._init_measurements) < 2:
+            self._throttled(
+                "info", "ekf_init_needs_pings",
+                f"EKF not initialized: {len(self._init_measurements)}/2 initial "
+                f"pings buffered -- waiting for another ping")
             return False
 
         # Check minimum separation between first and last measurements.
         vn0, ve0, _ = self._init_measurements[0]
         vn1, ve1, _ = self._init_measurements[-1]
-        if math.hypot(vn1 - vn0, ve1 - ve0) < self.min_separation:
+        moved = math.hypot(vn1 - vn0, ve1 - ve0)
+        if moved < self.min_separation:
+            self._throttled(
+                "info", "ekf_init_needs_motion",
+                f"EKF not initialized: vehicle has moved only {moved:.2f} m since "
+                f"the first buffered ping ({len(self._init_measurements)} pings "
+                f"buffered, needs {self.min_separation:.2f} m for a usable "
+                f"triangulation) -- drive on")
             return False
 
         result = triangulate_from_bearings(self._init_measurements)
         if result is None:
+            self._throttled(
+                "warn", "ekf_init_triangulation_failed",
+                f"EKF not initialized: triangulation from "
+                f"{len(self._init_measurements)} bearings returned nothing "
+                f"(degenerate geometry -- all bearings near-parallel)")
             return False
 
         self._x = np.array(result, dtype=float)
@@ -130,7 +148,13 @@ class IterativeEKFSolver(BaseSolver):
         r2 = dn * dn + de * de
 
         if r2 < 1e-6:
-            return  # Too close to vehicle; skip update.
+            # Too close to vehicle; skip update.
+            self._throttled(
+                "warn", "ekf_estimate_on_vehicle",
+                f"estimate ({self._x[0]:.3f}, {self._x[1]:.3f}) is within "
+                f"{math.sqrt(r2) * 100:.2f} cm of the vehicle -- skipping this "
+                f"update (the measurement is too close to define a bearing)")
+            return
 
         # Predicted body-relative DOA.
         world_bearing = math.atan2(de, dn)
@@ -160,9 +184,10 @@ class IterativeEKFSolver(BaseSolver):
 
     def _ping_callback(self, msg: Ping):
         """Process a new ping."""
-        vn, ve, vyaw, stamp_ns = self.get_latest_vehicle_state()
-        if stamp_ns == 0:
+        state = self.vehicle_state_for_ping(msg)
+        if state is None:
             return
+        vn, ve, vyaw, stamp_ns = state
 
         world_bearing_rad = self.world_bearing_from_doa(msg.doa_deg, vyaw)
 
@@ -183,7 +208,8 @@ class IterativeEKFSolver(BaseSolver):
         eigvals = np.linalg.eigvalsh(self._P)
         sigma = math.sqrt(max(eigvals[0], eigvals[1]))
         self.get_logger().info(
-            f"EKF est=({self._x[0]:.2f}, {self._x[1]:.2f}), sigma_max={sigma:.2f}m"
+            f"EKF est=({self._x[0]:.2f}, {self._x[1]:.2f}), sigma_max={sigma:.2f}m, "
+            f"doa={msg.doa_deg:.1f}deg, updates={self._pings_seen}"
         )
 
 

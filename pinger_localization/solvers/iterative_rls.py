@@ -74,7 +74,9 @@ class IterativeRLSSolver(BaseSolver):
 
         self.get_logger().info(
             f"RLS ready: forgetting_factor={self.forgetting_factor}, "
-            f"regularization={self.regularization}"
+            f"regularization={self.regularization}, init_range={self.init_range}m, "
+            f"min_separation={self.min_separation}m, "
+            f"ping<-'{self._ping_sub.topic_name}'"
         )
 
     # ------------------------------------------------------------------
@@ -84,15 +86,31 @@ class IterativeRLSSolver(BaseSolver):
     def _try_initialize(self):
         """Triangulate from buffered measurements to initialize RLS."""
         if len(self._init_measurements) < 2:
+            self._throttled(
+                "info", "rls_init_needs_pings",
+                f"RLS not initialized: {len(self._init_measurements)}/2 initial "
+                f"pings buffered -- waiting for another ping")
             return False
 
         vn0, ve0, _ = self._init_measurements[0]
         vn1, ve1, _ = self._init_measurements[-1]
-        if math.hypot(vn1 - vn0, ve1 - ve0) < self.min_separation:
+        moved = math.hypot(vn1 - vn0, ve1 - ve0)
+        if moved < self.min_separation:
+            self._throttled(
+                "info", "rls_init_needs_motion",
+                f"RLS not initialized: vehicle has moved only {moved:.2f} m since "
+                f"the first buffered ping ({len(self._init_measurements)} pings "
+                f"buffered, needs {self.min_separation:.2f} m for a usable "
+                f"triangulation) -- drive on")
             return False
 
         result = triangulate_from_bearings(self._init_measurements)
         if result is None:
+            self._throttled(
+                "warn", "rls_init_triangulation_failed",
+                f"RLS not initialized: triangulation from "
+                f"{len(self._init_measurements)} bearings returned nothing "
+                f"(degenerate geometry -- all bearings near-parallel)")
             return False
 
         self._x = np.array(result, dtype=float)
@@ -139,9 +157,10 @@ class IterativeRLSSolver(BaseSolver):
 
     def _ping_callback(self, msg: Ping):
         """Process a new ping."""
-        vn, ve, vyaw, stamp_ns = self.get_latest_vehicle_state()
-        if stamp_ns == 0:
+        state = self.vehicle_state_for_ping(msg)
+        if state is None:
             return
+        vn, ve, vyaw, stamp_ns = state
 
         world_bearing_rad = self.world_bearing_from_doa(msg.doa_deg, vyaw)
 
@@ -158,7 +177,8 @@ class IterativeRLSSolver(BaseSolver):
         sigma_e = math.sqrt(self._P[1, 1])
         self.get_logger().info(
             f"RLS est=({self._x[0]:.2f}, {self._x[1]:.2f}), "
-            f"sigma_n={sigma_n:.2f}m, sigma_e={sigma_e:.2f}m"
+            f"sigma_n={sigma_n:.2f}m, sigma_e={sigma_e:.2f}m, "
+            f"doa={msg.doa_deg:.1f}deg, updates={self._pings_seen}"
         )
 
 

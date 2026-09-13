@@ -5,13 +5,40 @@
 #       estimate_topic:=/pinger_localization/iterative_ekf/estimate \
 #       n_segments:=4
 #
+#   # seed by clicking the pipe in the Foxglove 3D panel instead of a solver:
+#   ros2 launch pinger_localization sonar_trace.launch.py seed_source:=sonar_point
+#
 # Note: the parameter file's node name must match the node's --name override
 # in sonar_trace.launch.py.
 
 pinger_sonar_trace:
   ros__parameters:
 
-    # ---- topics -------------------------------------------------------------
+    # ---- seed source --------------------------------------------------------
+    # Where the trace seed comes from:
+    #
+    #   "estimate"    - a solver's world-NED pinger estimate (estimate_topic)
+    #                   plus odometry, mapped world -> sonar at each cloud's
+    #                   own timestamp.  Requires a solver AND odom.
+    #   "sonar_point" - a geometry_msgs/PointStamped published straight into the
+    #                   sonar frame (sonar_seed_topic), e.g. by clicking the
+    #                   pipe in the Foxglove 3D panel.  No solver and no
+    #                   odometry are needed; the click's z is ignored (the sonar
+    #                   frame is its z=0 plane) and the latest click persists
+    #                   until the next one -- there is no staleness timeout on a
+    #                   manual seed, so re-click whenever the vehicle has moved.
+    #
+    #   Foxglove 3D panel setup: Publish section -> topic
+    #   /pinger_localization/sonar_trace/seed, schema geometry_msgs/PointStamped;
+    #   add the sonar cloud and set the panel's frame to auv5/sonar.  The bridge
+    #   must be running with the clientPublish capability (bring-up's tmuxp
+    #   launches `ros2 launch foxglove_bridge foxglove_bridge_launch.xml`).
+    #   If the panel publishes in another frame the node warns (throttled) and
+    #   /pinger_localization/sonar_trace/seed_used shows the misplaced seed.
+    seed_source: "estimate"
+    sonar_seed_topic: "/pinger_localization/sonar_trace/seed"
+
+    # ---- topics (seed_source: "estimate" only) ------------------------------
     # Which solver's estimate seeds the trace.  Every solver publishes its own
     # PointStamped estimate; set estimate_topic to choose the seed source:
     #   /pinger_localization/batch_sliding/estimate
@@ -49,7 +76,7 @@ pinger_sonar_trace:
     # ---- guards / perf ------------------------------------------------------
     min_cloud_points: 100       # below this the cloud is ignored
     max_odom_age_s: 0.5         # skip a cloud if odom is older than this (0=off)
-    max_estimate_age_s: 5.0     # skip if the pinger estimate is stale (0=off)
+    max_estimate_age_s: 5.0     # skip stale estimates (seed_source: estimate only)
     check_estimate_frame: true  # warn (not fail) if estimate/odom frames differ
     publish_failures: false     # publish an empty PoseArray when no model found
     cloud_stride: 1             # subsample every Nth cloud row (perf backstop)

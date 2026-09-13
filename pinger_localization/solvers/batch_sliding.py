@@ -61,7 +61,10 @@ class BatchSlidingSolver(BaseSolver):
         )
 
         self.get_logger().info(
-            f"BatchSliding ready: window_size={self.window_size}, window_sec={self.window_sec}"
+            f"BatchSliding ready: window_size={self.window_size}, "
+            f"window_sec={self.window_sec} (0 = window_size only), "
+            f"init_range={self.init_range}m, "
+            f"ping<-'{self._ping_sub.topic_name}'"
         )
 
     def _evict_old(self, now_ns: int):
@@ -85,9 +88,10 @@ class BatchSlidingSolver(BaseSolver):
 
     def _ping_callback(self, msg: Ping):
         """Process a new ping: add to window, evict old, re-optimize."""
-        vn, ve, vyaw, stamp_ns = self.get_latest_vehicle_state()
-        if stamp_ns == 0:
-            return  # No odometry yet.
+        state = self.vehicle_state_for_ping(msg)
+        if state is None:
+            return
+        vn, ve, vyaw, stamp_ns = state
 
         # Convert body-relative DOA to world bearing.
         world_bearing_rad = self.world_bearing_from_doa(msg.doa_deg, vyaw)
@@ -96,7 +100,14 @@ class BatchSlidingSolver(BaseSolver):
         self._evict_old(stamp_ns)
 
         if len(self._measurements) < 2:
-            return  # Need at least 2 measurements.
+            # Need at least 2 measurements -- also reached when window_sec
+            # evicts pings as fast as they arrive, which is otherwise invisible.
+            self._throttled(
+                "info", "sliding_needs_pings",
+                f"not solving: {len(self._measurements)}/2 measurements in the "
+                f"window (window_size={self.window_size}, window_sec="
+                f"{self.window_sec} drops anything older) -- waiting for pings")
+            return
 
         # Initial guess: previous estimate, or in front of vehicle.
         if not self._initialized:
@@ -119,8 +130,20 @@ class BatchSlidingSolver(BaseSolver):
         if result.success:
             self._estimate_north = float(result.x[0])
             self._estimate_east = float(result.x[1])
+            # Solved without logging before; a silently working solver looked
+            # exactly like a broken one.
+            self._throttled(
+                "info", "sliding_solved",
+                f"solved from {len(mlist)} measurements: est=("
+                f"{self._estimate_north:.2f}, {self._estimate_east:.2f}), "
+                f"cost={result.fun:.0f}deg^2", every_s=2.0)
         else:
-            self.get_logger().warn(f"Optimization failed: {result.message}")
+            # The previous estimate is published regardless (it is (0, 0) if
+            # this was the first solve), so say what went out and why.
+            self._throttled(
+                "warn", "sliding_opt_failed",
+                f"optimization failed ({result.message}); publishing the previous "
+                f"estimate ({self._estimate_north:.2f}, {self._estimate_east:.2f})")
 
         self.publish_estimate(self._estimate_north, self._estimate_east)
 

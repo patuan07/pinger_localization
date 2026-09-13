@@ -2,23 +2,38 @@
 """
 Live seed-traced sonar pipe model node.
 
-Wires the offline seed-traced pipe detector to the live sensors:
-subscribes to the Oculus sonar point cloud, seeds the detector with the current
-pinger-localization estimate (transformed into the sonar frame at the cloud
-timestamp), traces the pipe, segments the dense trace into an n-segment
-polyline, and publishes the model's VERTICES as a PoseArray in the sonar frame.
+Wires the offline seed-traced pipe detector to the live sensors: subscribes to
+the Oculus sonar point cloud, seeds the detector, traces the pipe, segments the
+dense trace into an n-segment polyline, and publishes the model's VERTICES as a
+PoseArray in the sonar frame.
+
+The seed comes from one of two selectable sources (parameter `seed_source`):
+
+* "estimate" (default) -- a solver's world-NED pinger estimate
+  (geometry_msgs/PointStamped) plus odometry, mapped world -> sonar at the
+  cloud's own timestamp.
+* "sonar_point" -- a geometry_msgs/PointStamped clicked in the Foxglove 3D panel
+  and already expressed in the sonar frame (its z is 0 by construction and is
+  ignored).  No odometry and no solver are needed; the latest click persists
+  until the next one.
 
 Inputs
 ------
 * /oculus/pointcloud (sensor_msgs/PointCloud2, frame auv5/sonar) -- the sonar
   return. x = range*cos(bearing), y = -range*sin(bearing), z = 0, intensity.
-* an estimate topic (geometry_msgs/PointStamped) -- one solver's world-NED
-  pinger estimate, e.g. /pinger_localization/iterative_ekf/estimate.
-* an odometry topic (nav_msgs/Odometry) -- vehicle pose in the NED world frame,
-  so the seed can be mapped world -> sonar at each cloud's own timestamp.
+* "estimate" mode only: an estimate topic (geometry_msgs/PointStamped) -- one
+  solver's world-NED pinger estimate, e.g.
+  /pinger_localization/iterative_ekf/estimate -- plus an odometry topic
+  (nav_msgs/Odometry) -- vehicle pose in the NED world frame, so the seed can be
+  mapped world -> sonar at each cloud's own timestamp.
+* "sonar_point" mode only: a seed topic (geometry_msgs/PointStamped) carrying a
+  point in the sonar frame, e.g. clicked in the Foxglove 3D panel.
 
-Output
-------
+Outputs
+-------
+* /pinger_localization/sonar_trace/seed_used (geometry_msgs/PointStamped, frame
+  auv5/sonar) -- the seed this node actually used, published per cloud *before*
+  the trace so a mis-placed or mis-framed seed is visible.
 * /pinger_localization/sonar_trace/vertices (geometry_msgs/PoseArray, frame
   auv5/sonar) -- one pose per vertex of the segmented pipe model, outward from
   the seed, z = 0. Default n_segments=3 => 4 poses (= n_segments+1 vertices).
@@ -46,6 +61,9 @@ from pinger_localization.sonar.geometry import seed_in_sonar
 POINTCLOUD_TOPIC = "/oculus/pointcloud"
 ESTIMATE_TOPIC = "/pinger_localization/iterative_ekf/estimate"
 ODOM_TOPIC = "/auv5/odom_ned"          # real bag: /auv5/nav/odom_ned
+SONAR_SEED_TOPIC = "/pinger_localization/sonar_trace/seed"
+SEED_USED_TOPIC = "/pinger_localization/sonar_trace/seed_used"
+SEED_SOURCE = "estimate"               # "estimate" | "sonar_point"
 SONAR_FRAME = "auv5/sonar"
 MOUNT_FORWARD_M = 0.29442               # base_link -> auv5/sonar x offset (bag)
 MOUNT_LATERAL_M = 0.0
@@ -113,8 +131,16 @@ def _pointcloud2_xyzi(msg: PointCloud2):
     return data[np.isfinite(data).all(axis=1)]
 
 
+def _norm_frame(frame_id: str) -> str:
+    """Frame names compare equal regardless of a leading '/'.
+
+    Foxglove and `ros2 topic pub` commonly send '/auv5/sonar' where the
+    tf tree (and this package's `sonar_frame` parameter) uses 'auv5/sonar'."""
+    return frame_id[1:] if frame_id.startswith("/") else frame_id
+
+
 class PingerSonarTrace(Node):
-    """Seed the sonar pipe detector with the pinger estimate; publish vertices."""
+    """Seed the sonar pipe detector; publish the seed used and the model vertices."""
 
     def __init__(self):
         super().__init__("pinger_sonar_trace")
@@ -125,6 +151,13 @@ class PingerSonarTrace(Node):
         self.pointcloud_topic = _d("pointcloud_topic", POINTCLOUD_TOPIC, lambda v: v.string_value)
         self.estimate_topic = _d("estimate_topic", ESTIMATE_TOPIC, lambda v: v.string_value)
         self.odom_topic = _d("odom_topic", ODOM_TOPIC, lambda v: v.string_value)
+        self.sonar_seed_topic = _d("sonar_seed_topic", SONAR_SEED_TOPIC, lambda v: v.string_value)
+        self.seed_source = _d("seed_source", SEED_SOURCE, lambda v: v.string_value)
+        if self.seed_source not in ("estimate", "sonar_point"):
+            self.get_logger().warn(
+                f"seed_source '{self.seed_source}' not recognised (expected "
+                f"'estimate' or 'sonar_point') -- falling back to 'estimate'")
+            self.seed_source = "estimate"
         self.sonar_frame = _d("sonar_frame", SONAR_FRAME, lambda v: v.string_value)
         self._body_frame = _d("body_frame", "auv5/base_link_ned", lambda v: v.string_value)
         self.mount_forward_m = _d("sonar_mount_forward_m", MOUNT_FORWARD_M, lambda v: v.double_value)
@@ -144,9 +177,13 @@ class PingerSonarTrace(Node):
         self._odom_history: deque = deque(maxlen=self.odom_history_size)
         self._odom_frame = None
         self._estimate = None            # (stamp_ns, x, y, frame_id) or None
+        self._sonar_seed = None          # (stamp_ns, x, y, frame_id) or None
 
         self._est_pub = self.create_publisher(
             PoseArray, "/pinger_localization/sonar_trace/vertices", 10
+        )
+        self._seed_pub = self.create_publisher(
+            PointStamped, SEED_USED_TOPIC, 10
         )
 
         # Cloud is sensor data from a real driver: subscribe best-effort so we
@@ -157,18 +194,33 @@ class PingerSonarTrace(Node):
             QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                        history=HistoryPolicy.KEEP_LAST, depth=5),
         )
-        self._est_sub = self.create_subscription(
-            PointStamped, self.estimate_topic, self._estimate_cb, 10
-        )
-        self._odom_sub = self.create_subscription(
-            Odometry, self.odom_topic, self._odom_cb, 50
-        )
+        # Only the selected seed source is subscribed: in sonar_point mode there
+        # is no solver and no odometry to wait for.
+        self._est_sub = None
+        self._odom_sub = None
+        self._seed_sub = None
+        if self.seed_source == "sonar_point":
+            self._seed_sub = self.create_subscription(
+                PointStamped, self.sonar_seed_topic, self._sonar_seed_cb, 10
+            )
+        else:
+            self._est_sub = self.create_subscription(
+                PointStamped, self.estimate_topic, self._estimate_cb, 10
+            )
+            self._odom_sub = self.create_subscription(
+                Odometry, self.odom_topic, self._odom_cb, 50
+            )
 
         self._warned_no_estimate = False
+        self._warned_no_seed = False
         self._last_throttled = 0.0
         self.get_logger().info(
             f"sonar trace node up: cloud={self.pointcloud_topic} "
-            f"estimate={self.estimate_topic} odom={self.odom_topic} "
+            f"seed_source={self.seed_source} "
+            + (f"seed={self.sonar_seed_topic} (manual, sonar frame)"
+               if self.seed_source == "sonar_point"
+               else f"estimate={self.estimate_topic} odom={self.odom_topic}")
+            + f" seed_used={SEED_USED_TOPIC} "
             f"n_segments={self.n_segments} (-> {self.n_segments + 1} poses) "
             f"seg_robust_trim={self.seg_robust_trim}"
         )
@@ -205,6 +257,68 @@ class PingerSonarTrace(Node):
         stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         self._estimate = (stamp_ns, msg.point.x, msg.point.y, msg.header.frame_id)
 
+    def _sonar_seed_cb(self, msg: PointStamped):
+        """Manual seed clicked in the Foxglove 3D panel, in the sonar frame.
+
+        Only x/y are used -- the sonar frame is its z=0 plane, so a click's z
+        carries no information.  The latest click wins and persists until the
+        next one: a manual seed deliberately has no age limit, because the
+        operator re-clicks whenever the seed needs correcting."""
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        self._sonar_seed = (stamp_ns, msg.point.x, msg.point.y, msg.header.frame_id)
+        if (msg.header.frame_id
+                and _norm_frame(msg.header.frame_id) != _norm_frame(self.sonar_frame)):
+            self._throttled(
+                "warn",
+                f"seed frame '{msg.header.frame_id}' != sonar frame "
+                f"'{self.sonar_frame}' -- using the point as sonar coordinates "
+                f"anyway (set the 3D panel's frame to '{self.sonar_frame}')")
+
+    def _seed_from_estimate(self, cloud_stamp_ns):
+        """World-NED estimate -> sonar seed at the cloud's timestamp, or None.
+
+        Logs (throttled) the reason whenever it returns None, so a silent
+        no-output stream always has an explanation."""
+        if self._estimate is None:
+            if not self._warned_no_estimate:
+                self._warned_no_estimate = True
+                self.get_logger().warn(
+                    f"no estimate yet on '{self.estimate_topic}' -- waiting")
+            return None
+        est_stamp_ns, est_x, est_y, est_frame = self._estimate
+        if self.max_estimate_age_s > 0:
+            age_s = abs(cloud_stamp_ns - est_stamp_ns) / 1e9
+            if age_s > self.max_estimate_age_s:
+                self._throttled("warn",
+                                f"estimate stale by {age_s:.1f}s "
+                                f"(max {self.max_estimate_age_s}s) -- skipping")
+                return None
+        if (self.check_estimate_frame and self._odom_frame is not None
+                and est_frame and self._odom_frame != est_frame):
+            self._throttled(
+                "warn",
+                f"estimate frame '{est_frame}' != odom frame '{self._odom_frame}' -- "
+                f"seed assumes both are the same NED world frame")
+
+        # --- odometry at cloud time -------------------------------------------
+        veh = self._vehicle_at(cloud_stamp_ns)
+        if veh is None:
+            self._throttled("warn", "no odometry received yet -- skipping")
+            return None
+        odom_stamp_ns, vn, ve, yaw = veh
+        if self.max_odom_age_s > 0:
+            odom_age_s = abs(cloud_stamp_ns - odom_stamp_ns) / 1e9
+            if odom_age_s > self.max_odom_age_s:
+                self._throttled(
+                    "warn",
+                    f"odom {odom_age_s * 1e3:.0f} ms away from cloud stamp "
+                    f"(max {self.max_odom_age_s}s) -- skipping")
+                return None
+
+        # --- map the world estimate into sonar data coords at this instant ----
+        return seed_in_sonar(est_x, est_y, vn, ve, yaw,
+                             self.mount_forward_m, self.mount_lateral_m)
+
     def _cloud_cb(self, msg: PointCloud2):
         cloud_stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         cloud_frame = msg.header.frame_id or self.sonar_frame
@@ -217,46 +331,32 @@ class PingerSonarTrace(Node):
                             f"cloud too small ({len(arr)} pts < {self.min_cloud_points})")
             return
 
-        # --- estimate guard ---------------------------------------------------
-        if self._estimate is None:
-            if not self._warned_no_estimate:
-                self._warned_no_estimate = True
-                self.get_logger().warn(
-                    f"no estimate yet on '{self.estimate_topic}' -- waiting")
-            return
-        est_stamp_ns, est_x, est_y, est_frame = self._estimate
-        if self.max_estimate_age_s > 0:
-            age_s = abs(cloud_stamp_ns - est_stamp_ns) / 1e9
-            if age_s > self.max_estimate_age_s:
-                self._throttled("warn",
-                                f"estimate stale by {age_s:.1f}s "
-                                f"(max {self.max_estimate_age_s}s) -- skipping")
+        # --- seed -------------------------------------------------------------
+        if self.seed_source == "sonar_point":
+            # Manual seed from the 3D panel: already sonar-frame coordinates, so
+            # no odometry, no estimate and no age check are involved.
+            if self._sonar_seed is None:
+                if not self._warned_no_seed:
+                    self._warned_no_seed = True
+                    self.get_logger().warn(
+                        f"no seed yet on '{self.sonar_seed_topic}' -- click a "
+                        f"point in the 3D panel (frame '{self.sonar_frame}')")
                 return
-        if (self.check_estimate_frame and self._odom_frame is not None
-                and est_frame and self._odom_frame != est_frame):
-            self._throttled(
-                "warn",
-                f"estimate frame '{est_frame}' != odom frame '{self._odom_frame}' -- "
-                f"seed assumes both are the same NED world frame")
-
-        # --- odometry at cloud time -------------------------------------------
-        veh = self._vehicle_at(cloud_stamp_ns)
-        if veh is None:
-            self._throttled("warn", "no odometry received yet -- skipping")
-            return
-        odom_stamp_ns, vn, ve, yaw = veh
-        if self.max_odom_age_s > 0:
-            odom_age_s = abs(cloud_stamp_ns - odom_stamp_ns) / 1e9
-            if odom_age_s > self.max_odom_age_s:
-                self._throttled(
-                    "warn",
-                    f"odom {odom_age_s * 1e3:.0f} ms away from cloud stamp "
-                    f"(max {self.max_odom_age_s}s) -- skipping")
+            seed = (self._sonar_seed[1], self._sonar_seed[2])
+        else:
+            seed = self._seed_from_estimate(cloud_stamp_ns)
+            if seed is None:
                 return
 
-        # --- map world estimate into sonar data coords at this instant --------
-        seed = seed_in_sonar(est_x, est_y, vn, ve, yaw,
-                             self.mount_forward_m, self.mount_lateral_m)
+        # Publish the seed actually used *before* tracing: when the trace fails
+        # or the seed lands outside the ROI, this is what shows where we seeded.
+        seed_msg = PointStamped()
+        seed_msg.header.stamp = msg.header.stamp
+        seed_msg.header.frame_id = cloud_frame
+        seed_msg.point.x = float(seed[0])
+        seed_msg.point.y = float(seed[1])
+        seed_msg.point.z = 0.0
+        self._seed_pub.publish(seed_msg)
 
         # --- trace + segment --------------------------------------------------
         chain, poly, info, _scorer = detect(arr, np.asarray(seed))
